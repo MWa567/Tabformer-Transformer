@@ -120,23 +120,6 @@ class PositionWiseFeedForward(nn.Module):
   def forward(self, x):
     return self.fc2(self.relu(self.fc1(x)))
 
-class PositionalEncoding(nn.Module):
-  def __init__(self, max_seq_length, d_model):
-    # could maybe include time features in positional encoding
-    super(PositionalEncoding, self).__init__()
-
-    pe = torch.zeros(max_seq_length, d_model) # tensor filled with 0's that will be populated with positional encodings
-    position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
-    div_term = torch.exp(torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model))
-
-    pe[:, 0::2] = torch.sin(position * div_term)
-    pe[:, 1::2] = torch.cos(position * div_term)
-
-    self.register_buffer('pe', pe.unsqueeze(0))
-
-  def forward(self, x):
-    return x + self.pe[:, :x.size(1)]
-
 class DecoderLayer(nn.Module):
   def __init__(self, d_model, num_heads, d_ff, dropout):
     super(DecoderLayer, self).__init__()
@@ -168,8 +151,7 @@ class Transformer(nn.Module):
 
     self.categorical_embedding = nn.ModuleList([nn.Embedding(c, d_model, padding_idx=0) for c in categorical])
     self.numeric_embedding = nn.ModuleList([nn.Linear(1, d_model) for _ in range(numeric)])
-    self.positional_encoding = PositionalEncoding(max_sequence_length, d_model*self.total_fields) # (batch_size, seq_length, num_features * d_model)
-    # self.positional_embedding = nn.Embedding(max_sequence_length, d_model * self.total_fields) # learned positional embedding
+    self.positional_embedding = nn.Embedding(max_sequence_length, d_model * self.total_fields) # learned positional embedding
 
     self.decoder_layers = nn.ModuleList([DecoderLayer(d_model*self.total_fields, num_heads, dim_feedforward, dropout) for _ in range(num_layers)])
 
@@ -199,15 +181,12 @@ class Transformer(nn.Module):
     tgt_categorical_embedded = torch.cat([self.categorical_embedding[i](tgt_categorical[:, i]) for i in range(self.num_categories)], dim=1) # (seq_length, num_categories*d_model)
     tgt_numeric_embedded = torch.cat([self.numeric_embedding[i](tgt_numeric[:, i].unsqueeze(-1)) for i in range(self.num_numeric)], dim=1) # (seq_length, num_numeric*d_model)
 
-    tgt_embedded = self.dropout(self.positional_encoding(torch.cat([tgt_categorical_embedded, tgt_numeric_embedded], dim=1).unsqueeze(0))) # (batch_size, seq_length, num_features * d_model)
     seq_len = tgt.size(0)
-
-    '''
+      
     position_ids = torch.arange(seq_len, device=tgt.device).unsqueeze(0)  # shape (1, seq_len)
     pos_embedding = self.positional_embedding(position_ids)               # shape (1, seq_len, d_model * total_fields)
 
     tgt_embedded = self.dropout(torch.cat([tgt_categorical_embedded, tgt_numeric_embedded], dim=1).unsqueeze(0) + pos_embedding)
-    '''
 
     dec_output = tgt_embedded # (batch_size, seq_length, num_features * d_model)
     for dec_layer in self.decoder_layers:

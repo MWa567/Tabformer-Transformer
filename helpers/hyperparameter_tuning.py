@@ -1,3 +1,4 @@
+# Hyperparameter tuning
 import optuna
 
 # Define objective, then define trial where parameters can vary, then study.optimize
@@ -25,61 +26,62 @@ def get_best_params(train_data, val_data):
     transformer.train()
 
     total_loss = 0
-    for user in range(len(train_data) // 3):
-      optimizer.zero_grad()
+    for epoch in range(3):
+      for user in range(len(train_data) // 2):
+        optimizer.zero_grad()
 
-      train_input = train_tgt_data[user, :-1, :]  # (seq_len - 1, num_features)
+        train_input = train_tgt_data[user, :-1, :]  # (seq_len - 1, num_features)
 
-      train_target = train_tgt_data[user, 1:, :]  # (seq_len - 1, num_features)
+        train_target = train_tgt_data[user, 1:, :]  # (seq_len - 1, num_features)
 
-      _, preds_cat, preds_num = transformer(train_input)
+        _, preds_cat, preds_num = transformer(train_input)
 
-      train_tgt_cat = train_target[:, :len(categorical)].long()  # (seq_len - 1, num_categorical)
-      train_tgt_num = train_target[:, len(categorical):len(categorical) + numerical].float()  # (seq_len - 1, num_numeric)
+        train_tgt_cat = train_target[:, :len(categorical)].long()  # (seq_len - 1, num_categorical)
+        train_tgt_num = train_target[:, len(categorical):len(categorical) + numerical].float()  # (seq_len - 1, num_numeric)
 
-      # Loss calculations
-      cat_loss = sum(
-          criterion_cat(pred.squeeze(0)[: train_num_trans_per_user[user]-1], train_tgt_cat[:, i][1: train_num_trans_per_user[user]].to(pred.device))
-          for i, pred in enumerate(preds_cat)
-      ) / len(preds_cat)
+        # Loss calculations
+        cat_loss = sum(
+            criterion_cat(pred.squeeze(0)[: train_num_trans_per_user[user]-1], train_tgt_cat[:, i][1: train_num_trans_per_user[user]].to(pred.device))
+            for i, pred in enumerate(preds_cat)
+        ) / len(preds_cat)
 
-      num_loss = sum(
-          criterion_num(pred.squeeze(0).squeeze(1)[: train_num_trans_per_user[user]-1], train_tgt_num[:, i][1: train_num_trans_per_user[user]])
-          for i, pred in enumerate(preds_num)
-      ) / len(preds_num)
+        num_loss = sum(
+            criterion_num(pred.squeeze(0).squeeze(1)[: train_num_trans_per_user[user]-1], train_tgt_num[:, i][1: train_num_trans_per_user[user]])
+            for i, pred in enumerate(preds_num)
+        ) / len(preds_num)
 
-      loss = cat_loss * 0.85 + num_loss * 0.15
-      loss.backward()
-      optimizer.step()
+        loss = cat_loss * 0.85 + num_loss * 0.15
+        loss.backward()
+        optimizer.step()
 
     # Validation set
     transformer.eval()
     total_val_loss = 0
     with torch.no_grad():
-      for user in range(len(val_data // 3)):
-        val_input = val_tgt_data[user, :-1, :]
-        val_target = val_tgt_data[user, 1:, :]
+      for epoch in range(3):
+        for user in range(len(val_data) // 2):
+          val_input = val_tgt_data[user, :-1, :]
+          val_target = val_tgt_data[user, 1:, :]
 
-        _, preds_cat, preds_num = transformer(val_input)
+          _, preds_cat, preds_num = transformer(val_input)
 
-        tgt_cat = val_target[:, :len(categorical)].long()
-        tgt_num = val_target[:, len(categorical):len(categorical) + numerical].float()
+          tgt_cat = val_target[:, :len(categorical)].long()
+          tgt_num = val_target[:, len(categorical):len(categorical) + numerical].float()
 
-        cat_loss = sum(
-            criterion_cat(pred.squeeze(0)[: val_num_trans_per_user[user]-1],
-                          tgt_cat[:, i][1: val_num_trans_per_user[user]].to(pred.device))
-            for i, pred in enumerate(preds_cat)
-        ) / len(preds_cat)
+          cat_loss = sum(
+              criterion_cat(pred.squeeze(0)[: val_num_trans_per_user[user]-1],
+                            tgt_cat[:, i][1: val_num_trans_per_user[user]].to(pred.device))
+              for i, pred in enumerate(preds_cat)
+          ) / len(preds_cat)
 
-        num_loss = sum(
-            criterion_num(pred.squeeze(0).squeeze(1)[: val_num_trans_per_user[user]-1],
-                          tgt_num[:, i][1: val_num_trans_per_user[user]])
-            for i, pred in enumerate(preds_num)
-        ) / len(preds_num)
+          num_loss = sum(
+              criterion_num(pred.squeeze(0).squeeze(1)[: val_num_trans_per_user[user]-1],
+                            tgt_num[:, i][1: val_num_trans_per_user[user]])
+              for i, pred in enumerate(preds_num)
+          ) / len(preds_num)
 
-        val_loss = cat_loss * 0.85 + num_loss * 0.15
-        total_val_loss += val_loss.item()
-
+          val_loss = cat_loss * 0.85 + num_loss * 0.15
+          total_val_loss += val_loss.item()
     avg_val_loss = total_val_loss / len(val_data)
     return avg_val_loss
 

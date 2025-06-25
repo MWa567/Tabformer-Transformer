@@ -1,46 +1,89 @@
 import optuna
 
-def get_best_params(X_train, y_train):
-    def objective(trial):
-        # Define the parameter search space
-        param = {
-            "objective": "binary",
-            "metric": "auc",
-            "boosting_type": "gbdt",
-            "num_leaves": trial.suggest_int("num_leaves", 20, 60),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.1),
-            "feature_fraction": trial.suggest_uniform("feature_fraction", 0.7, 0.9),
-            "bagging_fraction": trial.suggest_uniform("bagging_fraction", 0.7, 0.9),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 100),
-            "lambda_l1": trial.suggest_loguniform("lambda_l1", 1e-8, 10.0),
-            "lambda_l2": trial.suggest_loguniform("lambda_l2", 1e-8, 10.0),
-        }
+# Define objective, then define trial where parameters can vary, then study.optimize
 
-        # Prepare the dataset for LightGBM
-        train_data = lgb.Dataset(X_train, label=y_train)
+def get_best_params(train_data, val_data):
+  trial_data = []
 
-        # Perform cross-validation with early stopping
-        cv_results = lgb.cv(
-            params=param,
-            train_set=train_data,
-            nfold=3,
-            metrics=["auc"],
-            # early_stopping_rounds=50,
-            seed=42,
-        )
+  def objective(trial):
+    # Define parameters to optimize
+    params = {
+        'learning_rate': trial.suggest_float('learning_rate', 1e-6, 1e-4, log=True),
+        'd_model': trial.suggest_int('d_model', 16, 128),
+        'dropout': trial.suggest_float('dropout', 0.1, 0.5),
+        'num_layers': trial.suggest_int('num_layers', 1, 10),
+    }
 
-        # Get the best AUC score from cross-validation (mean of validation AUC scores)
-        return max(cv_results["valid auc-mean"])
+    # Train model
+    np.random.seed(42)
 
-    # Run the optimization process with Optuna
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=50)
+    transformer = Transformer(categorical, numerical, params['num_layers'], max_len+1, params['d_model'] * 4, 1, 4, 128, params['dropout']) # parameters in the custom format for my transformer class
+    criterion_cat = nn.CrossEntropyLoss()
+    criterion_num = nn.MSELoss()
+    optimizer = optim.Adam(transformer.parameters(), lr=params['learning_rate'])
 
-    # Retrieve the best parameters
-    best_params = study.best_params
+    transformer.train()
 
-    return best_params
+    total_loss = 0
+    for user in range(len(train_data) // 3):
+      optimizer.zero_grad()
 
-# Retrieve the best parameters
-best_params = get_best_params(X_train, y_train)
-print("Best parameters found:", best_params)
+      train_input = train_tgt_data[user, :-1, :]  # (seq_len - 1, num_features)
+
+      train_target = train_tgt_data[user, 1:, :]  # (seq_len - 1, num_features)
+
+      _, preds_cat, preds_num = transformer(train_input)
+
+      train_tgt_cat = train_target[:, :len(categorical)].long()  # (seq_len - 1, num_categorical)
+      train_tgt_num = train_target[:, len(categorical):len(categorical) + numerical].float()  # (seq_len - 1, num_numeric)
+
+      # Loss calculations
+      cat_loss = sum(
+          criterion_cat(pred.squeeze(0)[: train_num_trans_per_user[user]-1], train_tgt_cat[:, i][1: train_num_trans_per_user[user]].to(pred.device))
+          for i, pred in enumerate(preds_cat)
+      ) / len(preds_cat)
+
+      num_loss = sum(
+          criterion_num(pred.squeeze(0).squeeze(1)[: train_num_trans_per_user[user]-1], train_tgt_num[:, i][1: train_num_trans_per_user[user]])
+          for i, pred in enumerate(preds_num)
+      ) / len(preds_num)
+
+      loss = cat_loss * 0.85 + num_loss * 0.15
+      loss.backward()
+      optimizer.step()
+
+    # Validation set
+    transformer.eval()
+    total_val_loss = 0
+    with torch.no_grad():
+      for user in range(len(val_data // 3)):
+        val_input = val_tgt_data[user, :-1, :]
+        val_target = val_tgt_data[user, 1:, :]
+
+        _, preds_cat, preds_num = transformer(val_input)
+
+        tgt_cat = val_target[:, :len(categorical)].long()
+        tgt_num = val_target[:, len(categorical):len(categorical) + numerical].float()
+
+        cat_loss = sum(
+            criterion_cat(pred.squeeze(0)[: val_num_trans_per_user[user]-1],
+                          tgt_cat[:, i][1: val_num_trans_per_user[user]].to(pred.device))
+            for i, pred in enumerate(preds_cat)
+        ) / len(preds_cat)
+
+        num_loss = sum(
+            criterion_num(pred.squeeze(0).squeeze(1)[: val_num_trans_per_user[user]-1],
+                          tgt_num[:, i][1: val_num_trans_per_user[user]])
+            for i, pred in enumerate(preds_num)
+        ) / len(preds_num)
+
+        val_loss = cat_loss * 0.85 + num_loss * 0.15
+        total_val_loss += val_loss.item()
+
+    avg_val_loss = total_val_loss / len(val_data)
+    return avg_val_loss
+
+  study = optuna.create_study(direction='minimize')
+  study.optimize(objective, n_trials=25, show_progress_bar=True)
+
+  return study.best_params

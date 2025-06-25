@@ -1,0 +1,163 @@
+import pandas as pd
+import numpy as np
+
+from sklearn.preprocessing import StandardScaler
+from importlib import reload
+from datetime import datetime
+from geopy.distance import great_circle
+from sklearn.preprocessing import OneHotEncoder
+import statistics
+
+def data_preprocessing(train_data, val_data, test_data):
+  train_data = train_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
+  val_data = val_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
+  test_data = test_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
+
+  # Drop unnamed, merchant zipcode, cc_num, merchant, first, last, street, city, state, zip, job, trans_num, unix_time
+  for col in ["Unnamed: 0", "unix_time", "merchant", "first", "last", "street", "city", "zip", "job", "trans_num", "merch_zipcode"]:
+      train_data = train_data.drop([col], axis=1)
+      val_data = val_data.drop([col], axis=1)
+      test_data = test_data.drop([col], axis=1)
+
+  # Parse transdatetranstime column into six distinct features
+  date_format = "%Y-%m-%d %H:%M:%S"
+  train_data["Year"] = train_data["trans_date_trans_time"].str[0:4]
+  train_data["Month"] = train_data["trans_date_trans_time"].str[5:7]
+  train_data["Day"] = train_data["trans_date_trans_time"].str[8:10]
+  train_data["Hour"] = train_data["trans_date_trans_time"].str[11:13]
+  train_data["Minute"] = train_data["trans_date_trans_time"].str[14:16]
+  train_data["Second"] = train_data["trans_date_trans_time"].str[17:19]
+
+  val_data["Year"] = val_data["trans_date_trans_time"].str[0:4]
+  val_data["Month"] = val_data["trans_date_trans_time"].str[5:7]
+  val_data["Day"] = val_data["trans_date_trans_time"].str[8:10]
+  val_data["Hour"] = val_data["trans_date_trans_time"].str[11:13]
+  val_data["Minute"] = val_data["trans_date_trans_time"].str[14:16]
+  val_data["Second"] = val_data["trans_date_trans_time"].str[17:19]
+
+  test_data["Year"] = test_data["trans_date_trans_time"].str[0:4]
+  test_data["Month"] = test_data["trans_date_trans_time"].str[5:7]
+  test_data["Hour"] = test_data["trans_date_trans_time"].str[11:13]
+  test_data["Day"] = test_data["trans_date_trans_time"].str[8:10]
+  test_data["Minute"] = test_data["trans_date_trans_time"].str[14:16]
+  test_data["Second"] = test_data["trans_date_trans_time"].str[17:19]
+
+  for col in ["Year", "Month", "Day", "Hour", "Minute", "Second"]:
+    train_data[col] = pd.to_numeric(train_data[col], downcast='integer', errors='coerce')
+    val_data[col] = pd.to_numeric(val_data[col], downcast='integer', errors='coerce')
+    test_data[col] = pd.to_numeric(test_data[col], downcast='integer', errors='coerce')
+
+  # calculate day of week of the transaction
+
+  def calculate_day_of_week(row):
+    date_format = "%Y-%m-%d %H:%M:%S"
+    date_of_interest = datetime.strptime(row["trans_date_trans_time"], date_format)
+    return date_of_interest.weekday()
+
+  train_data['dayOfWeek'] = train_data.apply(calculate_day_of_week, axis=1)
+  val_data['dayOfWeek'] = val_data.apply(calculate_day_of_week, axis=1)
+  test_data['dayOfWeek'] = test_data.apply(calculate_day_of_week, axis=1)
+
+  train_data = train_data.drop(["trans_date_trans_time"], axis=1)
+  val_data = val_data.drop(["trans_date_trans_time"], axis=1)
+  test_data = test_data.drop(["trans_date_trans_time"], axis=1)
+
+  # calculate age from date of birth
+  def calculate_age(row):
+    dob = row['dob']
+    year_of_interest = row['Year']
+    month_of_interest = row['Month']
+    day_of_interest = row['Day']
+
+    dob_year = int(dob[0:4])
+    dob_month = int(dob[5:7])
+    dob_day = int(dob[8:10])
+
+    if dob_month > month_of_interest or (dob_month == month_of_interest and dob_day >= day_of_interest):
+        age = year_of_interest - dob_year
+    else:
+        age = year_of_interest - dob_year - 1
+
+    return age
+
+  '''
+  # Apply the function to the df
+  train_data['age'] = train_data.apply(calculate_age, axis=1)
+  test_data['age'] = test_data.apply(calculate_age, axis=1)
+  '''
+
+  train_data = train_data.drop(['dob'], axis=1)
+  val_data = val_data.drop(['dob'], axis=1)
+  test_data = test_data.drop(['dob'], axis=1)
+
+  # convert categories and gender to numerical data
+  def get_categories(col):
+    category_dict = {}
+    output = []
+    for val in col:
+      if val in category_dict:
+        category = category_dict[val]
+      else:
+        category = len(category_dict)
+        category_dict[val] = category
+      output.append(category)
+    return output
+
+  def get_gender(col):
+    output = []
+    for val in col:
+      if val == "M":
+        gender = 0.0
+      else:
+        gender = 1.0
+      output.append(gender)
+    return output
+
+  train_data['category'] = get_categories(train_data['category'].tolist())
+  train_data['gender'] = get_gender(train_data['gender'].tolist())
+
+  val_data['category'] = get_categories(val_data['category'].tolist())
+  val_data['gender'] = get_gender(val_data['gender'].tolist())
+
+  test_data['category'] = get_categories(test_data['category'].tolist())
+  test_data['gender'] = get_gender(test_data['gender'].tolist())
+
+  # get distance from merchant to user
+  def calculate_great_circle(row):
+    coordinates_from = (row['lat'], row['long'])
+    coordinates_to = (row['merch_lat'], row['merch_long'])
+    return great_circle(coordinates_from, coordinates_to).km
+
+  train_data['LatLong_Dist'] = train_data.apply(calculate_great_circle, axis=1)
+  val_data['LatLong_Dist'] = val_data.apply(calculate_great_circle, axis=1)
+  test_data['LatLong_Dist'] = test_data.apply(calculate_great_circle, axis=1)
+
+  train_data["avg_amts"] = [0] * len(train_data)
+  val_data["avg_amts"] = [0] * len(val_data)
+  test_data["avg_amts"] = [0] * len(test_data)
+
+  rolling_stats = (
+      train_data
+      .groupby('cc_num')['amt']
+      .rolling(window=9, min_periods=2)
+      .agg(['mean'])
+      .reset_index(level=0, drop=True)
+  )
+
+  train_data['avg_amts'] = rolling_stats['mean'] - train_data['amt']
+  val_data['avg_amts'] = rolling_stats['mean'] - val_data['amt']
+  train_data['avg_amts'] = train_data['avg_amts'].fillna(0)
+
+  rolling_stats = (
+      test_data
+      .groupby('cc_num')['amt']
+      .rolling(window=9, min_periods=2)
+      .agg(['mean'])
+      .reset_index(level=0, drop=True)
+  )
+
+  test_data['avg_amts'] = rolling_stats['mean'] - test_data['amt']
+  val_data['avg_amts'] = val_data['avg_amts'].fillna(0)
+  test_data['avg_amts'] = test_data['avg_amts'].fillna(0)
+
+  return train_data, val_data, test_data

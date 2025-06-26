@@ -17,13 +17,15 @@ from geopy.distance import great_circle
 from sklearn.preprocessing import OneHotEncoder
 import statistics
 
-def data_preprocessing(train_data, test_data):
+def data_preprocessing(train_data, val_data, test_data):
   train_data = train_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
+  val_data = val_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
   test_data = test_data.sort_values(by = ["cc_num", "trans_date_trans_time"])
 
   # Drop unnamed, merchant zipcode, cc_num, merchant, first, last, street, city, state, zip, job, trans_num, unix_time
   for col in ["Unnamed: 0", "unix_time", "merchant", "first", "last", "street", "city", "zip", "job", "trans_num", "merch_zipcode"]:
       train_data = train_data.drop([col], axis=1)
+      val_data = val_data.drop([col], axis=1)
       test_data = test_data.drop([col], axis=1)
 
   # Parse transdatetranstime column into six distinct features
@@ -35,6 +37,13 @@ def data_preprocessing(train_data, test_data):
   train_data["Minute"] = train_data["trans_date_trans_time"].str[14:16]
   train_data["Second"] = train_data["trans_date_trans_time"].str[17:19]
 
+  val_data["Year"] = val_data["trans_date_trans_time"].str[0:4]
+  val_data["Month"] = val_data["trans_date_trans_time"].str[5:7]
+  val_data["Day"] = val_data["trans_date_trans_time"].str[8:10]
+  val_data["Hour"] = val_data["trans_date_trans_time"].str[11:13]
+  val_data["Minute"] = val_data["trans_date_trans_time"].str[14:16]
+  val_data["Second"] = val_data["trans_date_trans_time"].str[17:19]
+
   test_data["Year"] = test_data["trans_date_trans_time"].str[0:4]
   test_data["Month"] = test_data["trans_date_trans_time"].str[5:7]
   test_data["Hour"] = test_data["trans_date_trans_time"].str[11:13]
@@ -44,6 +53,7 @@ def data_preprocessing(train_data, test_data):
 
   for col in ["Year", "Month", "Day", "Hour", "Minute", "Second"]:
     train_data[col] = pd.to_numeric(train_data[col], downcast='integer', errors='coerce')
+    val_data[col] = pd.to_numeric(val_data[col], downcast='integer', errors='coerce')
     test_data[col] = pd.to_numeric(test_data[col], downcast='integer', errors='coerce')
 
   # calculate day of week of the transaction
@@ -54,9 +64,11 @@ def data_preprocessing(train_data, test_data):
     return date_of_interest.weekday()
 
   train_data['dayOfWeek'] = train_data.apply(calculate_day_of_week, axis=1)
+  val_data['dayOfWeek'] = val_data.apply(calculate_day_of_week, axis=1)
   test_data['dayOfWeek'] = test_data.apply(calculate_day_of_week, axis=1)
 
   train_data = train_data.drop(["trans_date_trans_time"], axis=1)
+  val_data = val_data.drop(["trans_date_trans_time"], axis=1)
   test_data = test_data.drop(["trans_date_trans_time"], axis=1)
 
   # calculate age from date of birth
@@ -84,6 +96,7 @@ def data_preprocessing(train_data, test_data):
   '''
 
   train_data = train_data.drop(['dob'], axis=1)
+  val_data = val_data.drop(['dob'], axis=1)
   test_data = test_data.drop(['dob'], axis=1)
 
   # convert categories and gender to numerical data
@@ -112,6 +125,9 @@ def data_preprocessing(train_data, test_data):
   train_data['category'] = get_categories(train_data['category'].tolist())
   train_data['gender'] = get_gender(train_data['gender'].tolist())
 
+  val_data['category'] = get_categories(val_data['category'].tolist())
+  val_data['gender'] = get_gender(val_data['gender'].tolist())
+
   test_data['category'] = get_categories(test_data['category'].tolist())
   test_data['gender'] = get_gender(test_data['gender'].tolist())
 
@@ -122,58 +138,35 @@ def data_preprocessing(train_data, test_data):
     return great_circle(coordinates_from, coordinates_to).km
 
   train_data['LatLong_Dist'] = train_data.apply(calculate_great_circle, axis=1)
+  val_data['LatLong_Dist'] = val_data.apply(calculate_great_circle, axis=1)
   test_data['LatLong_Dist'] = test_data.apply(calculate_great_circle, axis=1)
 
-  def sum_hour_amts(df):
-    hours = {}
-    for index, row in df.iterrows():
-      hour = row['Hour']
-      amt = row['amt']
-      if hour in hours:
-        hours[hour] += [amt]
-      else:
-        hours[hour] = [amt]
-    return hours
+  train_data["avg_amts"] = [0] * len(train_data)
+  val_data["avg_amts"] = [0] * len(val_data)
+  test_data["avg_amts"] = [0] * len(test_data)
 
-  train_hour_amts = sum_hour_amts(train_data)
-  for hour in train_hour_amts:
-    train_hour_amts[hour] = (statistics.mean(train_hour_amts[hour]), statistics.stdev(train_hour_amts[hour]))
+  rolling_stats = (
+      train_data
+      .groupby('cc_num')['amt']
+      .rolling(window=9, min_periods=2)
+      .agg(['mean'])
+      .reset_index(level=0, drop=True)
+  )
 
-  test_hour_amts = sum_hour_amts(test_data)
-  for hour in test_hour_amts:
-    test_hour_amts[hour] = (statistics.mean(test_hour_amts[hour]), statistics.stdev(test_hour_amts[hour]))
+  train_data['avg_amts'] = rolling_stats['mean'] - train_data['amt']
+  val_data['avg_amts'] = rolling_stats['mean'] - val_data['amt']
+  train_data['avg_amts'] = train_data['avg_amts'].fillna(0)
 
-  def get_hour_amt(row, hour_amts):
-    category = row['Hour']
-    return (row['amt'] - hour_amts[hour][0]) / hour_amts[hour][1]
+  rolling_stats = (
+      test_data
+      .groupby('cc_num')['amt']
+      .rolling(window=9, min_periods=2)
+      .agg(['mean'])
+      .reset_index(level=0, drop=True)
+  )
 
-  train_data['hour_amt'] = train_data.apply(lambda row: get_hour_amt(row, train_hour_amts), axis=1)
-  test_data['hour_amt'] = test_data.apply(lambda row: get_hour_amt(row, test_hour_amts), axis=1)
+  test_data['avg_amts'] = rolling_stats['mean'] - test_data['amt']
+  val_data['avg_amts'] = val_data['avg_amts'].fillna(0)
+  test_data['avg_amts'] = test_data['avg_amts'].fillna(0)
 
-  def sum_category_amts(df):
-    categories = {}
-    for index, row in df.iterrows():
-      category = row['category']
-      amt = row['amt']
-      if category in categories:
-        categories[category] += [amt]
-      else:
-        categories[category] = [amt]
-    return categories
-
-  train_category_amts = sum_category_amts(train_data)
-  for category in train_category_amts:
-    train_category_amts[category] = (statistics.mean(train_category_amts[category]), statistics.stdev(train_category_amts[category]))
-
-  test_category_amts = sum_category_amts(test_data)
-  for category in test_category_amts:
-    test_category_amts[category] = (statistics.mean(test_category_amts[category]), statistics.stdev(test_category_amts[category]))
-
-  def get_category_amt(row, category_amts):
-    category = row['category']
-    return (row['amt'] - category_amts[category][0]) / category_amts[category][1]
-
-  train_data['category_amt'] = train_data.apply(lambda row: get_category_amt(row, train_category_amts), axis=1)
-  test_data['category_amt'] = test_data.apply(lambda row: get_category_amt(row, test_category_amts), axis=1)
-
-  return train_data, test_data
+  return train_data, val_data, test_data
